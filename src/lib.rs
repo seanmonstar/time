@@ -40,8 +40,8 @@ extern crate rustc_serialize;
 
 use std::cmp::Ordering;
 use std::fmt;
+use std::marker::PhantomData;
 use std::ops::{Add, Sub};
-//use std::io;
 
 pub use duration::Duration;
 
@@ -56,241 +56,14 @@ pub use parse::strptime;
 mod display;
 mod parse;
 mod duration;
+mod sys;
+
+/// Marker type for `Tm` that are in UTC time.
+pub enum Utc {}
+/// Market type for `Tm` that are in local time.
+pub enum Local {}
 
 static NSEC_PER_SEC: i32 = 1_000_000_000;
-
-#[cfg(unix)]
-mod ffi {
-    use libc::{c_int, c_long, c_char, time_t};
-    use super::Tm;
-
-    /// ctime's `tm`
-    #[repr(C)]
-    pub struct tm {
-        tm_sec: c_int,
-        tm_min: c_int,
-        tm_hour: c_int,
-        tm_mday: c_int,
-        tm_mon: c_int,
-        tm_year: c_int,
-        tm_wday: c_int,
-        tm_yday: c_int,
-        tm_isdst: c_int,
-        tm_gmtoff: c_long,
-        tm_zone: *const c_char,
-    }
-
-    impl Default for tm {
-        fn default() -> tm {
-            tm {
-                tm_sec: 0,
-                tm_min: 0,
-                tm_hour: 0,
-                tm_mday: 0,
-                tm_mon: 0,
-                tm_year: 0,
-                tm_wday: 0,
-                tm_yday: 0,
-                tm_isdst: 0,
-                tm_gmtoff: 0,
-                tm_zone: 0 as *const c_char
-            }
-        }
-    }
-
-    impl<'a> From<&'a Tm> for tm {
-        fn from(tm: &'a Tm) -> tm {
-            tm {
-                tm_sec: tm.tm_sec,
-                tm_min: tm.tm_min,
-                tm_hour: tm.tm_hour,
-                tm_mday: tm.tm_mday,
-                tm_mon: tm.tm_mon,
-                tm_year: tm.tm_year,
-                tm_wday: tm.tm_wday,
-                tm_yday: tm.tm_yday,
-                tm_isdst: tm.tm_isdst,
-                tm_gmtoff: tm.tm_utcoff as c_long,
-                .. tm::default()
-            }
-        }
-    }
-
-    fn tm_to_rust_tm(tm: &tm, rust_tm: &mut Tm) {
-        rust_tm.tm_sec = tm.tm_sec;
-        rust_tm.tm_min = tm.tm_min;
-        rust_tm.tm_hour = tm.tm_hour;
-        rust_tm.tm_mday = tm.tm_mday;
-        rust_tm.tm_mon = tm.tm_mon;
-        rust_tm.tm_year = tm.tm_year;
-        rust_tm.tm_wday = tm.tm_wday;
-        rust_tm.tm_yday = tm.tm_yday;
-        rust_tm.tm_isdst = tm.tm_isdst;
-    }
-
-    extern {
-        fn gmtime_r(time_p: *const time_t, result: *mut tm) -> *mut tm;
-        fn localtime_r(time_p: *const time_t, result: *mut tm) -> *mut tm;
-        fn timegm(tm: *const tm) -> time_t;
-        fn mktime(tm: *const tm) -> time_t;
-    }
-
-    pub fn gmtime(sec: i64, tm: &mut Tm) {
-        let mut out = tm::default();
-        unsafe {
-            gmtime_r(&sec, &mut out);
-        }
-        tm_to_rust_tm(&out, tm);
-        tm.tm_utcoff = 0;
-    }
-
-    pub fn localtime(sec: i64, tm: &mut Tm) {
-        let mut out = tm::default();
-        unsafe {
-            localtime_r(&sec, &mut out);
-        }
-        tm_to_rust_tm(&out, tm);
-        tm.tm_utcoff = out.tm_gmtoff as i32;
-    }
-
-    pub fn timegm_(tm: &Tm) ->  i64 {
-        unsafe {
-            timegm(&tm::from(tm))
-        }
-    }
-
-    pub fn mktime_(tm: &Tm) -> i64 {
-        unsafe {
-            mktime(&tm::from(tm))
-        }
-    }
-}
-
-#[cfg(windows)]
-mod ffi {
-    use libc::{WORD, DWORD, LONG};
-
-    #[repr(C)]
-    #[derive(Default)]
-    struct SystemTime {
-        wYear: WORD,
-        wMonth: WORD,
-        wDayOfWeek: WORD,
-        wDay: WORD,
-        wHour: WORD,
-        wMinute: WORD,
-        wSecond: WORD,
-        wMilliseconds: WORD,
-    }
-
-    #[repr(C)]
-    struct FileTime {
-        dwLowDateTime: DWORD,
-        dwHighDateTime: DWORD,
-    }
-
-    const WINDOWS_TICK: i64 = 10_000_000;
-    const SEC_TO_UNIX_EPOCH: i64 = 11_644_473_600;
-
-    impl From<i64> for FileTime {
-        fn from(sec: i64) -> FileTime {
-            let t = (sec + SEC_TO_UNIX_EPOCH) * WINDOWS_TICK;
-            FileTime {
-                dwLowDateTime: t as DWORD,
-                dwHighDateTime: (t >> 32) as DWORD
-            }
-        }
-    }
-
-    impl Into<i64> for FileTime {
-        fn into(self) -> i64 {
-            let t = ((self.dwHighDateTime as i64) << 32) | (self.dwLowDateTime as i64);
-            t / WINDOWS_TICK - SEC_TO_UNIX_EPOCH
-        }
-    }
-
-    impl<'a> From<&'a Tm> for SystemTime {
-        fn from(tm: &'a Tm) -> SystemTime {
-            let mut sys = SystemTime::default();
-            sys.wSecond = tm.tm_sec;
-            sys.wMinute = tm.tm_min;
-            sys.wHour = tm.tm_hour;
-            sys.wDay = tm.tm_mday;
-            sys.wDayOfWeek = tm.tm_wday;
-            sys.wMonth = tm.tm_mon + 1;
-            sys.wYear = tm.tm_year + 1900;
-            sys
-        }
-    }
-
-    fn system_time_to_tm(sys: &SystemTime, tm: &mut Tm) {
-        tm.tm_sec = sys.wSecond;
-        tm.tm_min = sys.wMinute;
-        tm.tm_hour = sys.wHour;
-        tm.tm_mday = sys.wDay;
-        tm.tm_wday = sys.wDayOfWeek;
-        tm.tm_mon = sys.wMonth - 1;
-        tm.tm_year = sys.wYear - 1900;
-    }
-
-    #[repr(C)]
-    struct TimeZoneInfo {
-        Bias: LONG,
-        StandardName: [WCHAR; 32],
-        StandardDate: SystemTime,
-        StandardBias: LONG,
-        DaylightName: [WCHAR; 32],
-        DaylightDate: SystemTime,
-        DaylightBias: LONG,
-    }
-
-    extern "system" {
-        fn GetSystemTime(out: *mut SystemTime);
-        fn FileTimeToLocalFileTime(in_: *const FileTime, out: *mut FileTime) -> bool;
-        fn FileTimeToSystemTime(ft: *const FileTime, out: *mut SystemTime) -> bool;
-        fn SystemTimeToFileTime(sys: *const SystemTime, ft: *mut FileTime) -> bool;
-        fn SystemTimeToTzSpecificLocalTime(tz: *const TimeZoneInfo, utc: *const SystemTime, local: *mut SystemTime) -> bool;
-    }
- 
-    pub fn gmtime(sec: i64, tm: &mut Tm) {
-        let mut out = SystemTime::default();
-        unsafe {
-            FileTimeToSystemTime(&sec.into(), &mut out);
-        }
-        system_time_to_tm(&out, tm);
-        tm.tm_utcoff = 0;
-    }
-
-    pub fn localtime(sec: i64, tm: &mut Tm) {
-        let mut out = SystemTime::default();
-        let mut tz = TimeZoneInfo::default();
-        unsafe {
-            GetTimeZoneInfo(&mut tz);
-            FileTimeToSystemTime(&sec.into(), &mut out);
-            SystemTimeToTzSpecificLocalTime(&tz, &out, &mut out);
-        }
-        system_time_to_tm(&out, tm);
-        tm.tm_utcoff = -tz.Bias * 60;
-    }
-
-    pub fn timegm_(tm: &Tm) -> i64 {
-        let mut ft = FileTime::default();
-        unsafe {
-            SystemTimeToFileTime(&SystemTime::from(tm), &mut ft);
-        }
-        ft.into()
-    }
-
-    pub fn mktime_(tm: &Tm) -> i64 {
-        let mut ft = FileTime::default();
-        unsafe {
-            SystemTimeToFileTime(&SystemTime::from(tm), &mut ft);
-            FileTimeToLocalFileTime(&ft, &mut ft);
-        }
-        ft.into()
-    }
-}
-
 #[cfg(all(unix, not(target_os = "macos"), not(target_os = "ios")))]
 mod imp {
     use libc::{c_int, timespec};
@@ -847,8 +620,7 @@ pub fn tzset() {
 /// day, and so on), also called a broken-down time value.
 // FIXME: use c_int instead of i32?
 #[repr(C)]
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub struct Tm {
+pub struct Tm<TZ = Utc> {
     /// Seconds after the minute - [0, 60]
     pub tm_sec: i32,
 
@@ -888,135 +660,136 @@ pub struct Tm {
 
     /// Nanoseconds after the second - [0, 10<sup>9</sup> - 1]
     pub tm_nsec: i32,
+
+    _tz: PhantomData<TZ>
 }
 
-impl Add<Duration> for Tm {
-    type Output = Tm;
-
-    /// The resulting Tm is in UTC.
-    // FIXME:  The resulting Tm should have the same timezone as `self`;
-    // however, we need a function such as `at_tm(clock: Timespec, offset: i32)`
-    // for this.
-    fn add(self, other: Duration) -> Tm {
-        at_utc(self.to_timespec() + other)
+impl<TZ> PartialEq for Tm<TZ> {
+    fn eq(&self, other: &Tm<TZ>) -> bool {
+        self.tm_sec == other.tm_sec &&
+            self.tm_min == other.tm_min &&
+            self.tm_hour == other.tm_hour &&
+            self.tm_mday == other.tm_mday &&
+            self.tm_mon == other.tm_mon &&
+            self.tm_year == other.tm_year &&
+            self.tm_isdst == other.tm_isdst &&
+            self.tm_utcoff == other.tm_utcoff &&
+            self.tm_nsec == other.tm_nsec
     }
 }
 
-impl Sub<Duration> for Tm {
-    type Output = Tm;
+impl<TZ> Eq for Tm<TZ> {}
 
-    /// The resulting Tm is in UTC.
-    // FIXME:  The resulting Tm should have the same timezone as `self`;
-    // however, we need a function such as `at_tm(clock: Timespec, offset: i32)`
-    // for this.
-    fn sub(self, other: Duration) -> Tm {
-        at_utc(self.to_timespec() - other)
+impl<TZ> Clone for Tm<TZ> {
+    fn clone(&self) -> Tm<TZ> {
+        *self
     }
 }
 
-impl Sub<Tm> for Tm {
+impl<TZ> Copy for Tm<TZ> {}
+
+impl<TZ> Default for Tm<TZ> {
+    fn default() -> Tm<TZ> {
+        Tm {
+            tm_sec: 0,
+            tm_min: 0,
+            tm_hour: 0,
+            tm_mday: 0,
+            tm_mon: 0,
+            tm_year: 0,
+            tm_wday: 0,
+            tm_yday: 0,
+            tm_isdst: 0,
+            tm_utcoff: 0,
+            tm_nsec: 0,
+            _tz: PhantomData
+        }
+    }
+}
+
+impl<TZ> fmt::Debug for Tm<TZ> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("Tm")
+            .field("tm_sec", &self.tm_sec)
+            .field("tm_min", &self.tm_min)
+            .field("tm_hour", &self.tm_hour)
+            .field("tm_mday", &self.tm_mday)
+            .field("tm_mon", &self.tm_mon)
+            .field("tm_year", &self.tm_year)
+            .field("tm_wday", &self.tm_wday)
+            .field("tm_yday", &self.tm_yday)
+            .field("tm_isdst", &self.tm_isdst)
+            .field("tm_utcoff", &self.tm_utcoff)
+            .field("tm_nsec", &self.tm_nsec)
+            .finish()
+    }
+}
+
+impl<TZ> Add<Duration> for Tm<TZ> where Tm<TZ>: Into<Timespec> + From<Timespec> {
+    type Output = Tm<TZ>; // must be same TZ
+
+    fn add(self, other: Duration) -> Tm<TZ> {
+        (self.to_timespec() + other).into()
+    }
+}
+
+impl<TZ> Sub<Duration> for Tm<TZ> where Tm<TZ>: Into<Timespec> + From<Timespec> {
+    type Output = Tm<TZ>;
+
+    fn sub(self, other: Duration) -> Tm<TZ> {
+        (self.to_timespec() - other).into()
+    }
+}
+
+impl<TZ> Sub<Tm<TZ>> for Tm<TZ> where Tm<TZ>: Into<Timespec> {
     type Output = Duration;
 
-    fn sub(self, other: Tm) -> Duration {
+    fn sub(self, other: Tm<TZ>) -> Duration {
         self.to_timespec() - other.to_timespec()
     }
 }
 
-impl PartialOrd for Tm {
-    fn partial_cmp(&self, other: &Tm) -> Option<Ordering> {
+impl<TZ: Eq> PartialOrd for Tm<TZ> where Tm<TZ>: Into<Timespec> {
+    fn partial_cmp(&self, other: &Tm<TZ>) -> Option<Ordering> {
         self.to_timespec().partial_cmp(&other.to_timespec())
     }
 }
 
-impl Ord for Tm {
-    fn cmp(&self, other: &Tm) -> Ordering {
+impl<TZ: Eq> Ord for Tm<TZ> where Tm<TZ>: Into<Timespec> {
+    fn cmp(&self, other: &Tm<TZ>) -> Ordering {
         self.to_timespec().cmp(&other.to_timespec())
     }
 }
 
 pub fn empty_tm() -> Tm {
-    Tm {
-        tm_sec: 0,
-        tm_min: 0,
-        tm_hour: 0,
-        tm_mday: 0,
-        tm_mon: 0,
-        tm_year: 0,
-        tm_wday: 0,
-        tm_yday: 0,
-        tm_isdst: 0,
-        tm_utcoff: 0,
-        tm_nsec: 0,
-    }
+    Tm::default()
 }
 
 /// Returns the specified time in UTC
-pub fn at_utc(clock: Timespec) -> Tm {
-    let Timespec { sec, nsec } = clock;
-    let mut tm = empty_tm();
-    ffi::gmtime(sec, &mut tm);
-    tm.tm_nsec = nsec;
-    tm
+pub fn at_utc(clock: Timespec) -> Tm<Utc> {
+    clock.into()
 }
 
 /// Returns the current time in UTC
-pub fn now_utc() -> Tm {
+pub fn now_utc() -> Tm<Utc> {
     at_utc(get_time())
 }
 
 /// Returns the specified time in the local timezone
-pub fn at(clock: Timespec) -> Tm {
-    let Timespec { sec, nsec } = clock;
-    let mut tm = empty_tm();
-    ffi::localtime(sec, &mut tm);
-    /*
-        panic!("failed to call localtime: {}",
-               io::Error::last_os_error());
-               */
-    tm.tm_nsec = nsec;
-    tm
+pub fn at(clock: Timespec) -> Tm<Local> {
+    clock.into()
 }
 
 /// Returns the current time in the local timezone
-pub fn now() -> Tm {
+pub fn now() -> Tm<Local> {
     at(get_time())
 }
 
-impl Tm {
+impl<TZ> Tm<TZ> {
+
     /// Convert time to the seconds from January 1, 1970
-    pub fn to_timespec(&self) -> Timespec {
-        let sec = match self.tm_utcoff {
-            0 => ffi::timegm_(self),
-            _ => ffi::mktime_(self)
-        };
-
-        Timespec::new(sec, self.tm_nsec)
-    }
-
-    /// Convert time to the local timezone
-    pub fn to_local(&self) -> Tm {
-        at(self.to_timespec())
-    }
-
-    /// Convert time to the UTC
-    pub fn to_utc(&self) -> Tm {
-        match self.tm_utcoff {
-            0 => *self,
-            _ => at_utc(self.to_timespec())
-        }
-    }
-
-    /**
-     * Returns a TmFmt that outputs according to the `asctime` format in ISO
-     * C, in the local timezone.
-     *
-     * Example: "Thu Jan  1 00:00:00 1970"
-     */
-    pub fn ctime(&self) -> TmFmt {
-        TmFmt {
-            tm: self,
-            format: Fmt::Ctime,
-        }
+    pub fn to_timespec(&self) -> Timespec where Self: Into<Timespec> {
+        (*self).into()
     }
 
     /**
@@ -1025,7 +798,7 @@ impl Tm {
      *
      * Example: "Thu Jan  1 00:00:00 1970"
      */
-    pub fn asctime(&self) -> TmFmt {
+    pub fn asctime(&self) -> TmFmt<TZ> {
         TmFmt {
             tm: self,
             format: Fmt::Str("%c"),
@@ -1033,7 +806,7 @@ impl Tm {
     }
 
     /// Formats the time according to the format string.
-    pub fn strftime<'a>(&'a self, format: &'a str) -> Result<TmFmt<'a>, ParseError> {
+    pub fn strftime<'a>(&'a self, format: &'a str) -> Result<TmFmt<'a, TZ>, ParseError> {
         validate_format(TmFmt {
             tm: self,
             format: Fmt::Str(format),
@@ -1046,7 +819,7 @@ impl Tm {
      * local: "Thu, 22 Mar 2012 07:53:18 PST"
      * utc:   "Thu, 22 Mar 2012 14:53:18 GMT"
      */
-    pub fn rfc822(&self) -> TmFmt {
+    pub fn rfc822(&self) -> TmFmt<TZ> {
         let fmt = if self.tm_utcoff == 0 {
             "%a, %d %b %Y %T GMT"
         } else {
@@ -1064,7 +837,7 @@ impl Tm {
      * local: "Thu, 22 Mar 2012 07:53:18 -0700"
      * utc:   "Thu, 22 Mar 2012 14:53:18 -0000"
      */
-    pub fn rfc822z(&self) -> TmFmt {
+    pub fn rfc822z(&self) -> TmFmt<TZ> {
         TmFmt {
             tm: self,
             format: Fmt::Str("%a, %d %b %Y %T %z"),
@@ -1078,13 +851,40 @@ impl Tm {
      * local: "2012-02-22T07:53:18-07:00"
      * utc:   "2012-02-22T14:53:18Z"
      */
-    pub fn rfc3339<'a>(&'a self) -> TmFmt {
+    pub fn rfc3339<'a>(&'a self) -> TmFmt<TZ> {
         TmFmt {
             tm: self,
             format: Fmt::Rfc3339,
         }
     }
 }
+
+impl Tm<Utc> {
+
+    /// Convert time to the local timezone
+    pub fn to_local(&self) -> Tm<Local> {
+        at(self.to_timespec())
+    }
+}
+
+impl Tm<Local> {
+    /// Convert time to the UTC
+    pub fn to_utc(&self) -> Tm<Utc> {
+        self.to_timespec().into()
+    }
+
+    /**
+     * Returns a TmFmt that outputs according to the `asctime` format in ISO
+     * C, in the local timezone.
+     *
+     * Example: "Thu Jan  1 00:00:00 1970"
+     */
+    pub fn ctime(&self) -> TmFmt<Local> {
+        self.asctime()
+    }
+}
+
+
 
 #[derive(Copy, PartialEq, Debug, Clone)]
 pub enum ParseError {
@@ -1134,20 +934,27 @@ impl fmt::Display for ParseError {
 }
 
 /// A wrapper around a `Tm` and format string that implements Display.
-#[derive(Debug)]
-pub struct TmFmt<'a> {
-    tm: &'a Tm,
+pub struct TmFmt<'a, TZ: 'a> {
+    tm: &'a Tm<TZ>,
     format: Fmt<'a>
+}
+
+impl<'a, TZ> fmt::Debug for TmFmt<'a, TZ> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("TmFmt")
+            .field("tm", self.tm)
+            .field("format", &self.format)
+            .finish()
+    }
 }
 
 #[derive(Debug)]
 enum Fmt<'a> {
     Str(&'a str),
     Rfc3339,
-    Ctime,
 }
 
-fn validate_format<'a>(fmt: TmFmt<'a>) -> Result<TmFmt<'a>, ParseError> {
+fn validate_format<'a, TZ>(fmt: TmFmt<'a, TZ>) -> Result<TmFmt<'a, TZ>, ParseError> {
 
     match (fmt.tm.tm_wday, fmt.tm.tm_mon) {
         (0...6, 0...11) => (),
@@ -1189,7 +996,8 @@ fn validate_format<'a>(fmt: TmFmt<'a>) -> Result<TmFmt<'a>, ParseError> {
 }
 
 /// Formats the time according to the format string.
-pub fn strftime(format: &str, tm: &Tm) -> Result<String, ParseError> {
+pub fn strftime<TZ>(format: &str, tm: &Tm<TZ>) -> Result<String, ParseError>
+where Tm<TZ>: Into<Timespec> {
     tm.strftime(format).map(|fmt| fmt.to_string())
 }
 
@@ -1356,10 +1164,8 @@ mod tests {
         let utc = at_utc(time);
         let local = at(time);
 
-        assert!(local.to_local() == local);
         assert!(local.to_utc() == utc);
         assert!(local.to_utc().to_local() == local);
-        assert!(utc.to_utc() == utc);
         assert!(utc.to_local() == local);
         assert!(utc.to_local().to_utc() == utc);
     }
@@ -1583,9 +1389,7 @@ mod tests {
         let utc   = at_utc(time);
         let local = at(time);
 
-        debug!("test_ctime: {} {}", utc.ctime(), local.ctime());
-
-        assert_eq!(utc.ctime().to_string(), "Fri Feb 13 15:31:30 2009".to_string());
+        assert_eq!(utc.to_local().ctime().to_string(), "Fri Feb 13 15:31:30 2009".to_string());
         assert_eq!(local.ctime().to_string(), "Fri Feb 13 15:31:30 2009".to_string());
     }
 
@@ -1647,7 +1451,7 @@ mod tests {
                    "2009-02-13T15:31:30-08:00".to_string());
         assert_eq!(local.strftime("%%").unwrap().to_string(), "%".to_string());
 
-         let invalid_specifiers = ["%E", "%J", "%K", "%L", "%N", "%O", "%o", "%Q", "%q"];
+        let invalid_specifiers = ["%E", "%J", "%K", "%L", "%N", "%O", "%o", "%Q", "%q"];
         for &sp in invalid_specifiers.iter() {
             assert_eq!(local.strftime(sp).unwrap_err(),
                        InvalidFormatSpecifier(sp[1..].chars().next().unwrap()));
@@ -1661,7 +1465,7 @@ mod tests {
         assert_eq!(local.rfc3339().to_string(), "2009-02-13T15:31:30-08:00".to_string());
 
         assert_eq!(utc.asctime().to_string(), "Fri Feb 13 23:31:30 2009".to_string());
-        assert_eq!(utc.ctime().to_string(), "Fri Feb 13 15:31:30 2009".to_string());
+        assert_eq!(utc.to_local().ctime().to_string(), "Fri Feb 13 15:31:30 2009".to_string());
         assert_eq!(utc.rfc822().to_string(), "Fri, 13 Feb 2009 23:31:30 GMT".to_string());
         assert_eq!(utc.rfc822z().to_string(), "Fri, 13 Feb 2009 23:31:30 -0000".to_string());
         assert_eq!(utc.rfc3339().to_string(), "2009-02-13T23:31:30Z".to_string());

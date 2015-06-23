@@ -3,19 +3,7 @@ use super::ParseError::*;
 
 /// Parses the time from the string according to the format string.
 pub fn strptime(mut s: &str, format: &str) -> Result<Tm, ParseError> {
-    let mut tm = Tm {
-        tm_sec: 0,
-        tm_min: 0,
-        tm_hour: 0,
-        tm_mday: 0,
-        tm_mon: 0,
-        tm_year: 0,
-        tm_wday: 0,
-        tm_yday: 0,
-        tm_isdst: 0,
-        tm_utcoff: 0,
-        tm_nsec: 0,
-    };
+    let mut tm = Tm::default();
     let mut chars = format.chars();
 
     while let Some(ch) = chars.next() {

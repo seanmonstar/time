@@ -1,8 +1,8 @@
 use std::fmt::{self, Display};
 
-use super::{TmFmt, Tm, Fmt};
+use super::{TmFmt, Tm, Fmt, Timespec};
 
-impl<'a> fmt::Display for TmFmt<'a> {
+impl<'a, TZ> fmt::Display for TmFmt<'a, TZ> where Tm<TZ>: Into<Timespec> {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         match self.format {
             Fmt::Str(ref s) => {
@@ -19,7 +19,6 @@ impl<'a> fmt::Display for TmFmt<'a> {
 
                 Ok(())
             }
-            Fmt::Ctime => self.tm.to_local().asctime().fmt(fmt),
             Fmt::Rfc3339 => {
                 if self.tm.tm_utcoff == 0 {
                     TmFmt {
@@ -68,7 +67,7 @@ fn iso_week_days(yday: i32, wday: i32) -> i32 {
         + iso_week1_wday - iso_week_start_wday
 }
 
-fn iso_week(fmt: &mut fmt::Formatter, ch:char, tm: &Tm) -> fmt::Result {
+fn iso_week<TZ>(fmt: &mut fmt::Formatter, ch:char, tm: &Tm<TZ>) -> fmt::Result {
     let mut year = tm.tm_year + 1900;
     let mut days = iso_week_days(tm.tm_yday, tm.tm_wday);
 
@@ -94,7 +93,8 @@ fn iso_week(fmt: &mut fmt::Formatter, ch:char, tm: &Tm) -> fmt::Result {
     }
 }
 
-fn parse_type(fmt: &mut fmt::Formatter, ch: char, tm: &Tm) -> fmt::Result {
+fn parse_type<TZ>(fmt: &mut fmt::Formatter, ch: char, tm: &Tm<TZ>) -> fmt::Result
+where Tm<TZ>: Into<Timespec> {
     match ch {
         'A' => write!(fmt, "{}", match tm.tm_wday {
             0 => "Sunday",
